@@ -24,9 +24,73 @@
 /* $begin csapp.c */
 #include "csapp.h"
 
+/*
+ * 학습용 안내: csapp.c는 CS:APP 책에서 제공하는 "도우미 함수 모음"입니다.
+ *
+ * 이 파일의 가장 큰 역할은 운영체제 함수들을 조금 더 쓰기 쉽게 감싸는 것입니다.
+ * 예를 들어 read(), write(), socket(), bind(), accept() 같은 함수는 실패하면
+ * 보통 -1을 반환하고, 실패 이유는 errno라는 전역 변수에 남깁니다. 매번
+ * 에러 검사를 직접 쓰면 실습 코드가 지저분해지므로, 이 파일은 Read(),
+ * Write(), Socket(), Bind(), Accept()처럼 첫 글자가 대문자인 래퍼 함수를
+ * 제공합니다. 대문자 래퍼는 실패하면 에러 메시지를 출력하고 종료합니다.
+ *
+ * 이름 읽는 법:
+ *   - open, read, socket: 운영체제가 제공하는 원래 함수
+ *   - Open, Read, Socket: 이 파일이 제공하는 에러 처리 포함 래퍼
+ *   - rio_...: robust I/O 원본 함수. 실패를 반환값으로 알려줍니다.
+ *   - Rio_...: rio_...에 에러 처리를 붙인 래퍼
+ *
+ * rc라는 변수 이름:
+ *   이 파일에는 int rc;가 많이 나옵니다. rc는 보통 "return code"의 줄임말입니다.
+ *   함수 호출 결과를 잠깐 담아두고, 성공/실패를 검사하기 위한 임시 변수입니다.
+ *
+ *     if ((rc = close(fd)) < 0)
+ *         unix_error("Close error");
+ *
+ *   위 코드는 close(fd)의 결과를 rc에 저장한 다음, 그 값이 0보다 작으면
+ *   실패로 보고 에러 처리한다는 뜻입니다. rc 자체가 특별한 문법은 아니고,
+ *   result나 ret처럼 개발자들이 자주 쓰는 변수 이름일 뿐입니다.
+ *
+ * 소켓을 처음 볼 때 붙잡을 핵심:
+ *   Unix/Linux에서는 파일, 터미널, 파이프, 네트워크 연결을 모두
+ *   "파일 디스크립터(fd)"라는 정수 번호로 다룹니다. 소켓도 fd입니다.
+ *   그래서 TCP 연결이 만들어진 뒤에는 파일처럼 read/write 할 수 있습니다.
+ *
+ * 웹 프록시 실습에서 자주 만나는 흐름:
+ *   브라우저가 프록시에 접속할 수 있게 포트를 엽니다.
+ *     listenfd = Open_listenfd(port)
+ *     connfd = Accept(listenfd, ...)
+ *
+ *   프록시가 실제 웹 서버에 접속합니다.
+ *     serverfd = Open_clientfd(hostname, port)
+ *
+ *   연결된 소켓 fd에서 HTTP 메시지를 읽고 씁니다.
+ *     Rio_readinitb(&rio, fd)
+ *     Rio_readlineb(&rio, buf, MAXLINE)
+ *     Rio_writen(fd, buf, strlen(buf))
+ */
+
 /************************** 
  * Error-handling functions
  **************************/
+/*
+ * 에러 처리 함수들
+ *
+ * 시스템 프로그래밍에서는 함수 계열마다 에러를 알려주는 방식이 조금 다릅니다.
+ *
+ *   Unix 시스템 콜:
+ *     실패하면 보통 -1을 반환하고 errno에 이유를 저장합니다.
+ *     예: open, read, write, socket, bind, accept
+ *
+ *   POSIX pthread 함수:
+ *     성공하면 0, 실패하면 에러 번호 자체를 반환합니다.
+ *
+ *   getaddrinfo 함수:
+ *     성공하면 0, 실패하면 gai_strerror로 해석해야 하는 에러 코드를 반환합니다.
+ *
+ * 아래 함수들은 각 에러 코드를 사람이 읽을 수 있는 메시지로 바꿔 출력한 뒤
+ * 프로그램을 종료합니다.
+ */
 /* $begin errorfuns */
 /* $begin unixerror */
 void unix_error(char *msg) /* Unix-style error */
@@ -65,6 +129,13 @@ void dns_error(char *msg) /* Obsolete gethostbyname error */
 /*********************************************
  * Wrappers for Unix process control functions
  ********************************************/
+/*
+ * 프로세스 제어 래퍼들
+ *
+ * fork/exec/wait는 프로세스를 만들고, 다른 프로그램을 실행하고, 자식 프로세스가
+ * 끝나기를 기다리는 함수들입니다. webproxy lab의 중심은 소켓이지만, CS:APP
+ * 전체 책에서 쓰는 공통 도우미라서 이 파일에 함께 들어 있습니다.
+ */
 
 /* $begin forkwrapper */
 pid_t Fork(void) 
@@ -147,12 +218,30 @@ pid_t Getpgrp(void) {
 /************************************
  * Wrappers for Unix signal functions 
  ***********************************/
+/*
+ * 시그널 래퍼들
+ *
+ * 시그널은 운영체제가 프로세스에게 보내는 비동기 알림입니다.
+ * 예: Ctrl-C는 SIGINT, 알람은 SIGALRM, 자식 종료 알림은 SIGCHLD입니다.
+ *
+ * 네트워크 서버에서는 accept/read/write 같은 시스템 콜이 시그널 때문에 중간에
+ * 끊길 수 있습니다. 이때 errno가 EINTR이 됩니다. 아래 Signal 래퍼는
+ * SA_RESTART 옵션을 켜서 가능한 경우 끊긴 시스템 콜이 자동으로 재시작되게
+ * 설정합니다.
+ */
 
 /* $begin sigaction */
 handler_t *Signal(int signum, handler_t *handler) 
 {
     struct sigaction action, old_action;
 
+    /*
+     * struct sigaction은 csapp.c가 직접 정의한 구조체가 아닙니다.
+     * csapp.h가 include하는 <signal.h>에 들어 있는 POSIX 구조체입니다.
+     *
+     * action: 새로 등록할 시그널 처리 규칙
+     * old_action: 이전에 등록되어 있던 처리 규칙을 돌려받는 공간
+     */
     action.sa_handler = handler;  
     sigemptyset(&action.sa_mask); /* Block sigs of type being handled */
     action.sa_flags = SA_RESTART; /* Restart syscalls if possible */
@@ -218,6 +307,14 @@ int Sigsuspend(const sigset_t *set)
  * The Sio (Signal-safe I/O) package - simple reentrant output
  * functions that are safe for signal handlers.
  *************************************************************/
+/*
+ * Sio(signal-safe I/O)
+ *
+ * 시그널 핸들러 안에서는 printf 같은 함수를 마음대로 호출하면 위험할 수 있습니다.
+ * 내부에서 전역 버퍼나 락을 건드릴 수 있기 때문입니다. 그래서 이 패키지는
+ * write처럼 시그널 핸들러에서 비교적 안전한 함수만 사용해서 문자열과 숫자를
+ * 출력합니다.
+ */
 
 /* Private sio functions */
 
@@ -317,6 +414,26 @@ void Sio_error(char s[])
 /********************************
  * Wrappers for Unix I/O routines
  ********************************/
+/*
+ * Unix I/O 래퍼들
+ *
+ * Unix/Linux는 많은 입출력 대상을 fd(file descriptor)라는 정수로 표현합니다.
+ * 파일 fd, 터미널 fd, 파이프 fd, 소켓 fd가 모두 같은 read/write/close 함수로
+ * 다뤄질 수 있습니다.
+ *
+ *   read(fd, buf, count):
+ *     fd에서 최대 count바이트를 읽어 buf에 넣습니다.
+ *
+ *   write(fd, buf, count):
+ *     buf에 있는 count바이트를 fd로 보냅니다.
+ *
+ *   close(fd):
+ *     fd를 닫고 운영체제 자원을 반납합니다.
+ *
+ * 소켓을 처음 배울 때 중요한 점은 "연결된 TCP 소켓도 fd라서 read/write가 된다"는
+ * 것입니다. 프록시는 브라우저와 연결된 connfd에서 읽고, 서버와 연결된 serverfd에
+ * 쓰는 식으로 동작합니다.
+ */
 
 int Open(const char *pathname, int flags, mode_t mode) 
 {
@@ -544,11 +661,37 @@ void Fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream)
 /**************************** 
  * Sockets interface wrappers
  ****************************/
+/*
+ * 소켓 인터페이스 래퍼들
+ *
+ * 소켓은 네트워크 통신을 위한 파일 디스크립터입니다. TCP 연결이 성립된 뒤에는
+ * 일반 파일처럼 read/write/Rio_*로 데이터를 주고받을 수 있습니다.
+ *
+ * 서버 쪽 기본 순서:
+ *   1. socket() : 통신용 fd를 만듭니다.
+ *   2. bind()   : 그 fd에 "내가 사용할 IP/포트"를 붙입니다.
+ *   3. listen() : 그 fd를 접속 요청 대기용 소켓으로 바꿉니다.
+ *   4. accept() : 접속한 클라이언트 하나와 통신할 새 fd를 받습니다.
+ *
+ * 클라이언트 쪽 기본 순서:
+ *   1. socket()  : 통신용 fd를 만듭니다.
+ *   2. connect() : 서버 IP/포트로 TCP 연결을 겁니다.
+ *
+ * listenfd와 connfd:
+ *   listenfd는 "손님을 받는 접수대"입니다. 계속 accept를 기다립니다.
+ *   connfd는 accept가 반환하는 "손님 한 명과 연결된 통신 채널"입니다.
+ *   HTTP 요청/응답은 listenfd가 아니라 connfd로 읽고 씁니다.
+ */
 
 int Socket(int domain, int type, int protocol) 
 {
     int rc;
 
+    /*
+     * domain: 주소 체계입니다. AF_INET은 IPv4, AF_INET6은 IPv6입니다.
+     * type: 통신 방식입니다. SOCK_STREAM은 TCP처럼 연결 지향 바이트 스트림입니다.
+     * protocol: 보통 0을 넣으면 domain/type에 맞는 기본 프로토콜을 고릅니다.
+     */
     if ((rc = socket(domain, type, protocol)) < 0)
 	unix_error("Socket error");
     return rc;
@@ -558,6 +701,12 @@ void Setsockopt(int s, int level, int optname, const void *optval, int optlen)
 {
     int rc;
 
+    /*
+     * setsockopt는 소켓 옵션을 바꿉니다.
+     * 이 파일에서는 open_listenfd에서 SO_REUSEADDR를 켭니다. 서버를 껐다가
+     * 바로 다시 켤 때 이전 TCP 연결 흔적 때문에 "Address already in use"가
+     * 나는 경우를 줄여줍니다.
+     */
     if ((rc = setsockopt(s, level, optname, optval, optlen)) < 0)
 	unix_error("Setsockopt error");
 }
@@ -566,6 +715,10 @@ void Bind(int sockfd, struct sockaddr *my_addr, int addrlen)
 {
     int rc;
 
+    /*
+     * bind는 서버가 사용할 주소를 소켓에 붙입니다.
+     * 예: "이 소켓은 15213번 포트로 들어오는 연결을 받을 것이다."
+     */
     if ((rc = bind(sockfd, my_addr, addrlen)) < 0)
 	unix_error("Bind error");
 }
@@ -574,6 +727,11 @@ void Listen(int s, int backlog)
 {
     int rc;
 
+    /*
+     * listen은 bind된 소켓을 접속 요청 대기 상태로 만듭니다.
+     * backlog는 아직 accept되지 않은 연결 요청을 커널이 큐에 얼마나 쌓아둘지
+     * 알려주는 값입니다.
+     */
     if ((rc = listen(s,  backlog)) < 0)
 	unix_error("Listen error");
 }
@@ -582,6 +740,13 @@ int Accept(int s, struct sockaddr *addr, socklen_t *addrlen)
 {
     int rc;
 
+    /*
+     * accept는 listening socket에서 클라이언트 연결 하나를 꺼내고,
+     * 그 클라이언트와 실제 통신할 새 fd를 반환합니다.
+     *
+     * 반환값 rc가 바로 connfd입니다. 이후 HTTP 요청을 읽거나 응답을 쓸 때는
+     * 이 connfd를 사용합니다.
+     */
     if ((rc = accept(s, addr, addrlen)) < 0)
 	unix_error("Accept error");
     return rc;
@@ -591,6 +756,10 @@ void Connect(int sockfd, struct sockaddr *serv_addr, int addrlen)
 {
     int rc;
 
+    /*
+     * connect는 클라이언트 입장에서 서버로 TCP 연결을 거는 함수입니다.
+     * 성공하면 sockfd는 서버와 연결된 fd가 되고, 이후 read/write가 가능합니다.
+     */
     if ((rc = connect(sockfd, serv_addr, addrlen)) < 0)
 	unix_error("Connect error");
 }
@@ -598,12 +767,33 @@ void Connect(int sockfd, struct sockaddr *serv_addr, int addrlen)
 /*******************************
  * Protocol-independent wrappers
  *******************************/
+/*
+ * 프로토콜 독립 주소 변환 래퍼들
+ *
+ * 예전 코드에서는 IPv4만 생각하고 sockaddr_in 구조체를 직접 채우는 경우가
+ * 많았습니다. 하지만 지금은 IPv4/IPv6를 모두 고려해야 하므로 getaddrinfo를
+ * 사용하는 방식이 권장됩니다.
+ *
+ * getaddrinfo(hostname, port, hints, &listp)는 다음 일을 해줍니다.
+ *   - "www.example.com" 같은 이름을 실제 IP 주소 후보로 바꿉니다.
+ *   - "80" 같은 포트 문자열을 네트워크 주소 구조체 안에 넣어줍니다.
+ *   - IPv4인지 IPv6인지에 맞는 sockaddr 구조체 목록을 만들어줍니다.
+ *
+ * 결과는 연결 리스트(listp)입니다. 사용자는 그 목록을 돌면서 socket/connect
+ * 또는 socket/bind를 시도하면 됩니다.
+ */
 /* $begin getaddrinfo */
 void Getaddrinfo(const char *node, const char *service, 
                  const struct addrinfo *hints, struct addrinfo **res)
 {
     int rc;
 
+    /*
+     * node: 호스트 이름 또는 IP 문자열입니다. 예: "localhost", "example.com".
+     * service: 포트 번호 또는 서비스 이름입니다. 예: "80", "http".
+     * hints: 원하는 조건입니다. 예: TCP 소켓, 숫자 포트만 허용.
+     * res: 결과 주소 후보 목록의 시작 주소가 저장됩니다.
+     */
     if ((rc = getaddrinfo(node, service, hints, res)) != 0) 
         gai_error(rc, "Getaddrinfo error");
 }
@@ -621,11 +811,17 @@ void Getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host,
 
 void Freeaddrinfo(struct addrinfo *res)
 {
+    /* getaddrinfo가 만든 주소 후보 목록은 사용 후 반드시 해제합니다. */
     freeaddrinfo(res);
 }
 
 void Inet_ntop(int af, const void *src, char *dst, socklen_t size)
 {
+    /*
+     * network to presentation:
+     * 커널이 쓰는 바이너리 IP 주소를 사람이 읽는 문자열로 바꿉니다.
+     * 예: 4바이트 IPv4 주소 -> "127.0.0.1"
+     */
     if (!inet_ntop(af, src, dst, size))
         unix_error("Inet_ntop error");
 }
@@ -634,6 +830,11 @@ void Inet_pton(int af, const char *src, void *dst)
 {
     int rc;
 
+    /*
+     * presentation to network:
+     * 사람이 읽는 IP 문자열을 커널이 쓰는 바이너리 주소로 바꿉니다.
+     * 예: "127.0.0.1" -> 4바이트 IPv4 주소
+     */
     rc = inet_pton(af, src, dst);
     if (rc == 0)
 	app_error("inet_pton error: invalid dotted-decimal address");
@@ -741,6 +942,24 @@ void V(sem_t *sem)
 /****************************************
  * The Rio package - Robust I/O functions
  ****************************************/
+/*
+ * Rio(Robust I/O) 패키지
+ *
+ * read/write는 "요청한 바이트 수를 항상 한 번에 처리한다"는 보장이 없습니다.
+ * 예를 들어 100바이트를 읽으라고 했는데 커널 버퍼에 17바이트만 준비되어 있으면
+ * read는 17만 반환할 수 있습니다. write도 일부만 쓰고 돌아올 수 있습니다.
+ *
+ * Rio는 이런 partial read/write를 반복 호출로 보완합니다.
+ *
+ * 웹 프록시에서 중요한 이유:
+ *   - HTTP 헤더는 줄 단위 텍스트라 Rio_readlineb가 편합니다.
+ *   - HTTP 본문이나 이미지 같은 데이터는 바이트 단위로 정확히 옮겨야 합니다.
+ *   - 네트워크 I/O는 시그널에 의해 중간에 끊길 수 있으므로 EINTR 처리도 필요합니다.
+ *
+ * buffered와 unbuffered:
+ *   - rio_readn/rio_writen: 내부 버퍼 없이 fd에서 바로 n바이트 처리
+ *   - rio_readinitb + rio_readlineb/rio_readnb: 내부 버퍼를 사용해 효율적으로 읽기
+ */
 
 /*
  * rio_readn - Robustly read n bytes (unbuffered)
@@ -752,6 +971,10 @@ ssize_t rio_readn(int fd, void *usrbuf, size_t n)
     ssize_t nread;
     char *bufp = usrbuf;
 
+    /*
+     * 목표: fd에서 정확히 n바이트를 읽으려고 반복합니다.
+     * EOF를 만나면 n보다 적게 읽고 끝날 수 있습니다.
+     */
     while (nleft > 0) {
 	if ((nread = read(fd, bufp, nleft)) < 0) {
 	    if (errno == EINTR) /* Interrupted by sig handler return */
@@ -761,6 +984,10 @@ ssize_t rio_readn(int fd, void *usrbuf, size_t n)
 	} 
 	else if (nread == 0)
 	    break;              /* EOF */
+	/*
+	 * read가 일부만 읽었을 수 있으므로, 남은 바이트 수와 다음 저장 위치를
+	 * 갱신하고 계속 반복합니다.
+	 */
 	nleft -= nread;
 	bufp += nread;
     }
@@ -778,6 +1005,10 @@ ssize_t rio_writen(int fd, void *usrbuf, size_t n)
     ssize_t nwritten;
     char *bufp = usrbuf;
 
+    /*
+     * 목표: usrbuf의 n바이트가 전부 fd로 나갈 때까지 write를 반복합니다.
+     * 소켓으로 HTTP 요청/응답을 보낼 때 일부만 전송되는 문제를 막아줍니다.
+     */
     while (nleft > 0) {
 	if ((nwritten = write(fd, bufp, nleft)) <= 0) {
 	    if (errno == EINTR)  /* Interrupted by sig handler return */
@@ -785,6 +1016,7 @@ ssize_t rio_writen(int fd, void *usrbuf, size_t n)
 	    else
 		return -1;       /* errno set by write() */
 	}
+	/* 방금 쓴 만큼 건너뛰고, 아직 못 쓴 나머지를 계속 씁니다. */
 	nleft -= nwritten;
 	bufp += nwritten;
     }
@@ -807,6 +1039,11 @@ static ssize_t rio_read(rio_t *rp, char *usrbuf, size_t n)
     int cnt;
 
     while (rp->rio_cnt <= 0) {  /* Refill if buf is empty */
+	/*
+	 * 내부 버퍼가 비어 있으면 커널 fd에서 RIO_BUFSIZE만큼 한 번에 가져옵니다.
+	 * 사용자가 1바이트씩 요청하더라도 매번 read 시스템 콜을 하지 않게 하려는
+	 * 목적입니다.
+	 */
 	rp->rio_cnt = read(rp->rio_fd, rp->rio_buf, 
 			   sizeof(rp->rio_buf));
 	if (rp->rio_cnt < 0) {
@@ -820,6 +1057,10 @@ static ssize_t rio_read(rio_t *rp, char *usrbuf, size_t n)
     }
 
     /* Copy min(n, rp->rio_cnt) bytes from internal buf to user buf */
+    /*
+     * 내부 버퍼에 남아 있는 양과 사용자가 요청한 양 중 더 작은 만큼만 복사합니다.
+     * 복사 후에는 포인터와 남은 개수를 갱신해서 다음 호출이 이어서 읽게 합니다.
+     */
     cnt = n;          
     if (rp->rio_cnt < n)   
 	cnt = rp->rio_cnt;
@@ -836,6 +1077,10 @@ static ssize_t rio_read(rio_t *rp, char *usrbuf, size_t n)
 /* $begin rio_readinitb */
 void rio_readinitb(rio_t *rp, int fd) 
 {
+    /*
+     * rio_t 구조체를 특정 fd와 연결하고 내부 버퍼 상태를 초기화합니다.
+     * Rio_readlineb/Rio_readnb를 쓰기 전에 반드시 한 번 호출해야 합니다.
+     */
     rp->rio_fd = fd;  
     rp->rio_cnt = 0;  
     rp->rio_bufptr = rp->rio_buf;
@@ -852,6 +1097,10 @@ ssize_t rio_readnb(rio_t *rp, void *usrbuf, size_t n)
     ssize_t nread;
     char *bufp = usrbuf;
     
+    /*
+     * buffered 버전의 rio_readn입니다. 내부 버퍼(rp)를 사용한다는 점이 다릅니다.
+     * HTTP body처럼 "정해진 바이트 수만큼" 읽을 때 사용할 수 있습니다.
+     */
     while (nleft > 0) {
 	if ((nread = rio_read(rp, bufp, nleft)) < 0) 
             return -1;          /* errno set by read() */ 
@@ -873,6 +1122,16 @@ ssize_t rio_readlineb(rio_t *rp, void *usrbuf, size_t maxlen)
     int n, rc;
     char c, *bufp = usrbuf;
 
+    /*
+     * 한 줄을 읽습니다. '\n'을 만날 때까지 1바이트씩 가져오지만, 실제 fd read는
+     * rio_read 내부 버퍼 덕분에 덩어리 단위로 일어납니다.
+     *
+     * HTTP 요청/응답 헤더는 줄 단위입니다. 예를 들어:
+     *   GET /index.html HTTP/1.0\r\n
+     *   Host: example.com\r\n
+     *   \r\n
+     * 이런 헤더를 읽을 때 Rio_readlineb가 매우 유용합니다.
+     */
     for (n = 1; n < maxlen; n++) { 
         if ((rc = rio_read(rp, &c, 1)) == 1) {
 	    *bufp++ = c;
@@ -952,24 +1211,57 @@ int open_clientfd(char *hostname, char *port) {
     struct addrinfo hints, *listp, *p;
 
     /* Get a list of potential server addresses */
+    /*
+     * 클라이언트용 연결 헬퍼입니다.
+     *
+     * 입력:
+     *   hostname: 접속할 서버 이름입니다. 예: "example.com", "localhost"
+     *   port: 접속할 서버 포트입니다. 예: "80", "8080"
+     *
+     * 성공하면 서버와 이미 connect된 소켓 fd를 반환합니다.
+     * 즉, 반환된 clientfd에는 바로 Rio_writen/Rio_readlineb 등을 사용할 수 있습니다.
+     *
+     * 프록시 관점:
+     *   브라우저가 프록시에 요청한 URL에서 host/port를 뽑고,
+     *   프록시가 실제 웹 서버로 나가는 연결을 만들 때 이 함수를 씁니다.
+     */
     memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_socktype = SOCK_STREAM;  /* Open a connection */
-    hints.ai_flags = AI_NUMERICSERV;  /* ... using a numeric port arg. */
-    hints.ai_flags |= AI_ADDRCONFIG;  /* Recommended for connections */
+    hints.ai_socktype = SOCK_STREAM;  /* TCP 연결을 원한다는 뜻입니다. */
+    hints.ai_flags = AI_NUMERICSERV;  /* port가 "http"가 아니라 "80" 같은 숫자 문자열이라고 가정합니다. */
+    hints.ai_flags |= AI_ADDRCONFIG;  /* 현재 머신에서 사용 가능한 주소 체계(IPv4/IPv6)를 우선 고려합니다. */
     if ((rc = getaddrinfo(hostname, port, &hints, &listp)) != 0) {
         fprintf(stderr, "getaddrinfo failed (%s:%s): %s\n", hostname, port, gai_strerror(rc));
         return -2;
     }
   
     /* Walk the list for one that we can successfully connect to */
+    /*
+     * getaddrinfo는 주소 후보를 여러 개 줄 수 있습니다.
+     * 예: IPv6 후보, IPv4 후보, 도메인 하나에 연결된 여러 IP.
+     * 그중 하나라도 socket 생성 + connect에 성공하면 연결 성공입니다.
+     */
+
+    //p조건은 p != NULL과 완전 동일
+    //NULL은 0이랑 동일하기 때문
     for (p = listp; p; p = p->ai_next) {
         /* Create a socket descriptor */
+        /*
+         * p가 가진 주소 체계(ai_family), 소켓 타입(ai_socktype), 프로토콜(ai_protocol)에
+         * 맞춰 소켓 fd를 만듭니다.
+         */
         if ((clientfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0) 
             continue; /* Socket failed, try the next */
 
         /* Connect to the server */
+        /*
+         * TCP 연결을 시도합니다. 성공하면 clientfd는 서버와 연결된 소켓이 됩니다.
+         */
         if (connect(clientfd, p->ai_addr, p->ai_addrlen) != -1) 
             break; /* Success */
+        /*
+         * 이 주소 후보로는 연결이 안 됐으므로 fd를 닫고 다음 후보를 시도합니다.
+         * 실패한 fd를 닫지 않으면 fd 누수가 생깁니다.
+         */
         if (close(clientfd) < 0) { /* Connect failed, try another */  //line:netp:openclientfd:closefd
             fprintf(stderr, "open_clientfd: close failed: %s\n", strerror(errno));
             return -1;
@@ -1000,26 +1292,50 @@ int open_listenfd(char *port)
     int listenfd, rc, optval=1;
 
     /* Get a list of potential server addresses */
+    /*
+     * 서버용 listen 소켓 헬퍼입니다.
+     *
+     * 입력:
+     *   port: 서버가 기다릴 포트 번호 문자열입니다. 예: "15213"
+     *
+     * 성공하면 accept를 호출할 수 있는 listening socket fd를 반환합니다.
+     *
+     * 프록시 관점:
+     *   브라우저가 프록시에 접속할 수 있도록 프록시가 자기 포트를 열 때 씁니다.
+     */
     memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_socktype = SOCK_STREAM;             /* Accept connections */
-    hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG; /* ... on any IP address */
-    hints.ai_flags |= AI_NUMERICSERV;            /* ... using port number */
+    hints.ai_socktype = SOCK_STREAM;             /* TCP 연결을 받을 소켓을 원합니다. */
+    hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG; /* NULL host와 함께 쓰면 "내 모든 적절한 IP"에서 받겠다는 뜻입니다. */
+    hints.ai_flags |= AI_NUMERICSERV;            /* port가 숫자 문자열이라고 알려줍니다. */
     if ((rc = getaddrinfo(NULL, port, &hints, &listp)) != 0) {
         fprintf(stderr, "getaddrinfo failed (port %s): %s\n", port, gai_strerror(rc));
         return -2;
     }
 
     /* Walk the list for one that we can bind to */
+    /*
+     * 여러 주소 후보 중 bind에 성공하는 하나를 찾습니다.
+     * 환경에 따라 IPv6 후보가 먼저 나오고 실패한 뒤 IPv4에서 성공할 수도 있습니다.
+     */
     for (p = listp; p; p = p->ai_next) {
         /* Create a socket descriptor */
         if ((listenfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) < 0) 
             continue;  /* Socket failed, try the next */
 
         /* Eliminates "Address already in use" error from bind */
+        /*
+         * 서버를 종료하고 바로 다시 실행하면 이전 TCP 연결 흔적 때문에 포트가 잠시
+         * 사용 중처럼 보일 수 있습니다. SO_REUSEADDR는 같은 포트에 다시 bind할 수
+         * 있게 도와줍니다.
+         */
         setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR,    //line:netp:csapp:setsockopt
                    (const void *)&optval , sizeof(int));
 
         /* Bind the descriptor to the address */
+        /*
+         * 성공하면 이 listenfd는 port에 묶인 상태가 됩니다.
+         * 아직 클라이언트를 받는 상태는 아니고, 아래 listen 호출까지 해야 합니다.
+         */
         if (bind(listenfd, p->ai_addr, p->ai_addrlen) == 0)
             break; /* Success */
         if (close(listenfd) < 0) { /* Bind failed, try the next */
@@ -1035,6 +1351,10 @@ int open_listenfd(char *port)
         return -1;
 
     /* Make it a listening socket ready to accept connection requests */
+    /*
+     * bind된 fd를 listening socket으로 전환합니다.
+     * 이 함수가 성공해야 main 루프에서 Accept(listenfd, ...)를 호출할 수 있습니다.
+     */
     if (listen(listenfd, LISTENQ) < 0) {
         close(listenfd);
 	return -1;
@@ -1065,7 +1385,3 @@ int Open_listenfd(char *port)
 }
 
 /* $end csapp.c */
-
-
-
-
