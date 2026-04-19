@@ -1324,9 +1324,9 @@ int open_listenfd(char *port)
 
         /* Eliminates "Address already in use" error from bind */
         /*
-         * 서버를 종료하고 바로 다시 실행하면 이전 TCP 연결 흔적 때문에 포트가 잠시
-         * 사용 중처럼 보일 수 있습니다. SO_REUSEADDR는 같은 포트에 다시 bind할 수
-         * 있게 도와줍니다.
+         * TCP 연결을 끊으면, ESTABLISHED → FIN_WAIT → TIME_WAIT 단계를 거친다.
+         * TIME_WAIT은 몇십 초 유지되는데, 이 때 다시 서버를 키면, bind에 실패한다.
+         * 아래는 TIME_WAIT 상태여도, 이 포트 다시 써도 된다고 설정하는 함수
          */
         setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR,    //line:netp:csapp:setsockopt
                    (const void *)&optval , sizeof(int));
