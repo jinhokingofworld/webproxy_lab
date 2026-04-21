@@ -43,8 +43,16 @@ void echo (int connfd) {
     char buf[MAXLINE];
     rio_t rio;
 
+    // typedef struct {
+    //     int rio_fd;                /* Descriptor for this internal buf */
+    //     int rio_cnt;               /* Unread bytes in internal buf */
+    //     char *rio_bufptr;          /* Next unread byte in internal buf */
+    //     char rio_buf[RIO_BUFSIZE]; /* Internal buffer */
+    // } rio_t;
     Rio_readinitb(&rio, connfd);
 
+    //read 시스템콜은 partial read가 생기기 쉬움.
+    //그래서 안전하게 입출력 해주는 ROBUST_IO를 만들어서 사용
     while((n = Rio_readlineb(&rio, buf, MAXLINE)) != 0) {
         printf("server received %d bytes\n", (int) n);
         Rio_writen(connfd, buf, n);
