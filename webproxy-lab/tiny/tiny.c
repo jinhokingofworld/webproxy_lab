@@ -325,7 +325,7 @@ void serve_static(int fd, char *filename, int filesize)
   sprintf(buf + strlen(buf), "Content-length: %d\r\n", filesize);
 
   /* Content-type은 본문 데이터가 HTML인지, 이미지인지 등을 알려줍니다. */
-  sprintf(buf + strlen(buf), "Content-type: %s\r\n", filetype);
+  sprintf(buf + strlen(buf), "Content-type: %s\r\n\r\n", filetype);
 
   /* 완성한 HTTP 응답 헤더를 클라이언트에게 보냅니다. */
   Rio_writen(fd, buf, strlen(buf));
